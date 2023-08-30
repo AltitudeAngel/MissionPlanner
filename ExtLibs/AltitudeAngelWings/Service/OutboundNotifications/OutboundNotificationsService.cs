@@ -19,6 +19,7 @@ namespace AltitudeAngelWings.Service.OutboundNotifications
         private readonly IFlightClient _flightServiceClient;
         private readonly IMissionPlannerState _missionPlannerState;
         private ClientWebSocket _clientWebSocket;
+        private bool _started = false;
 
         public OutboundNotificationsService(
             IMissionPlanner missionPlanner,
@@ -40,6 +41,7 @@ namespace AltitudeAngelWings.Service.OutboundNotifications
             {
                 await SetupAaClientWebSocket(cancellationToken);
             }
+            _started = true;
         }
 
         public async Task StopWebSocket(CancellationToken cancellationToken = default)
@@ -48,6 +50,7 @@ namespace AltitudeAngelWings.Service.OutboundNotifications
             {
                 await TearDownAaClientWebSocket(cancellationToken);
             }
+            _started = false;
         }
 
         private Task SetupAaClientWebSocket(CancellationToken cancellationToken)
@@ -55,7 +58,7 @@ namespace AltitudeAngelWings.Service.OutboundNotifications
             _clientWebSocket = new ClientWebSocket
             {
                 OnError = OnError,
-                OnDisconnected = OnDisconnected, // TODO: Always attempt to reconnect on disconnect
+                OnDisconnected = OnDisconnected,
                 OnConnected = OnConnected,
                 OnMessage = OnMessage
             };
@@ -117,11 +120,13 @@ namespace AltitudeAngelWings.Service.OutboundNotifications
                         break;
                     case OutboundNotificationsCommands.Instruction:
                         var instructionProperties = notification.Properties.ToObject<InstructionNotificationProperties>();
+                        // TODO: Timeout Yes/No/Ignore response with timeout in settings, default 10 seconds.
+                        // TODO: Mapping of instruction to MAVlink mode and auto accept/reject/ignore/ask
                         if (await _missionPlanner.ShowYesNoMessageBox(
-                            $"You have been sent the following instruction:\r\n\r\n\"{instructionProperties.Instruction}\"\r\n\r\nDo you wish to accept and follow the instruction?",
-                            "Instruction"))
+                                $"You have been sent the following instruction:\r\n\r\n\"{instructionProperties.Instruction}\"\r\n\r\nDo you wish to accept and follow the instruction?",
+                                "Instruction"))
                         {
-                            await _flightServiceClient.AcceptInstruction(instructionProperties.InstructionId);
+                            await _flightServiceClient.AcceptInstruction(instructionProperties.InstructionId, cancellationToken);
                             if (instructionProperties.Instruction.IndexOf("hold", StringComparison.InvariantCultureIgnoreCase) >= 0)
                             {
                                 await  _missionPlanner.CommandDroneToLoiter((float)_missionPlannerState.Latitude, (float)_missionPlannerState.Longitude, _missionPlannerState.Altitude);
@@ -147,7 +152,7 @@ namespace AltitudeAngelWings.Service.OutboundNotifications
                         }
                         else
                         {
-                            await _flightServiceClient.RejectInstruction(instructionProperties.InstructionId);
+                            await _flightServiceClient.RejectInstruction(instructionProperties.InstructionId, cancellationToken);
                         }
                         break;
                     default:
@@ -165,7 +170,11 @@ namespace AltitudeAngelWings.Service.OutboundNotifications
             => _messagesService.AddMessageAsync(Message.ForInfo("WebSocket", "Notifications web socket connected."));
 
         private Task OnDisconnected(CancellationToken cancellationToken = default)
-            => _messagesService.AddMessageAsync(Message.ForInfo("WebSocket", "Notifications web socket disconnected."));
+        {
+            // TODO: Attempt reconnect if should be started and not stopping or stopped - notify on failure to reconnect
+            return _messagesService.AddMessageAsync(Message.ForInfo("WebSocket",
+                "Notifications web socket disconnected."));
+        }
 
         private Task OnError(Exception e, CancellationToken cancellationToken = default)
             => _messagesService.AddMessageAsync(Message.ForError("WebSocket", "Notifications web socket error.", e));
